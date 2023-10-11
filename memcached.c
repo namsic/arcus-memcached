@@ -13345,7 +13345,7 @@ static int try_read_command(conn *c)
 }
 
 /*
- * read a UDP request.
+ * read a  UDP request.
  */
 static enum try_read_result try_read_udp(conn *c)
 {
