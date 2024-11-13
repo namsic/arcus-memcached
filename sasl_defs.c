@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+const char *zk_host;
+
 #ifdef HAVE_SASL_CB_GETCONF
 /* The locations we may search for a SASL config file if the user didn't
  * specify one in the environment variable SASL_CONF_PATH
@@ -137,6 +139,24 @@ static int sasl_log(void *context, int level, const char *message)
 
     return SASL_OK;
 }
+
+static int arcus_getopt(void *context __attribute__((unused)), 
+                const char *plugin_name __attribute__((unused)), 
+                const char *option,
+                const char **result, unsigned *len) {
+    if (!strcmp(option, "mech_list")) {
+        *result = "scram-sha-256";
+        if (len) *len = (unsigned)strlen(*result);
+        return SASL_OK;
+    }
+    if (!strcmp(option, "sasldb_path")) {
+        *result = zk_host;
+        if (len) *len = (unsigned)strlen(*result);
+        return SASL_OK;
+    }
+
+    return SASL_FAIL;
+}
 #endif
 
 static sasl_callback_t sasl_callbacks[] = {
@@ -146,6 +166,7 @@ static sasl_callback_t sasl_callbacks[] = {
 
 #ifdef ENABLE_SASL
    { SASL_CB_LOG, (int(*)(void))sasl_log, NULL },
+   { SASL_CB_GETOPT, (int(*)(void))&arcus_getopt, NULL },
 #endif
 
 #ifdef HAVE_SASL_CB_GETCONF
@@ -155,7 +176,7 @@ static sasl_callback_t sasl_callbacks[] = {
    { SASL_CB_LIST_END, NULL, NULL }
 };
 
-void init_sasl(void) {
+void init_sasl(char *zk_cfg) {
 #ifdef ENABLE_SASL_PWDB
     memcached_sasl_pwdb = getenv("MEMCACHED_SASL_PWDB");
     if (memcached_sasl_pwdb == NULL) {
@@ -168,6 +189,7 @@ void init_sasl(void) {
        sasl_callbacks[0].proc = NULL;
     }
 #endif
+    zk_host = strdup(zk_cfg);
 
     if (sasl_server_init(sasl_callbacks, "memcached") != SASL_OK) {
         fprintf(stderr, "Error initializing sasl.\n");
