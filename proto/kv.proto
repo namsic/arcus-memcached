@@ -1,0 +1,31 @@
+syntax = "proto3";
+package kv;
+
+message SetRequest {
+  string key = 1;
+  uint32 flags = 2;
+  int64 expireTime = 3;
+  bytes data = 4;
+}
+
+enum StatusCode {
+  ERROR = 0;
+  STORED = 1;
+}
+
+message SetResponse {
+  StatusCode status = 1;
+}
+
+message GetRequest {
+  repeated string keys = 1;
+}
+
+message Value {
+  bytes data = 1;
+  uint32 flags = 2;
+}
+
+message GetResponse {
+  map<string, Value> values = 1;
+}
