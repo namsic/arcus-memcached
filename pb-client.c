@@ -2,12 +2,15 @@
 #include "proto/kv.pb-c.h"
 #include <arpa/inet.h>
 #include <assert.h>
+#include <bits/time.h>
 #include <netinet/in.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #define SERVER_PORT 8080
@@ -80,12 +83,22 @@ void send_get_request(int sock_fd, char **keys, size_t num_keys) {
 
   kv__get_request__pack(&request, buf + len);
   len += msg_len;
+  printf("get_req_len=%d\n", len);
   assert(send(sock_fd, buf, len, 0) == len);
 
   uint32_t resp_len;
   assert(recv(sock_fd, &resp_len, sizeof(resp_len), 0) == sizeof(resp_len));
   uint8_t resp_buf[1024];
   assert(recv(sock_fd, resp_buf, resp_len, 0) == resp_len);
+  printf("get_resp_len=%lu\n", sizeof(resp_len) + resp_len);
+
+  Kv__GetResponse *response =
+      kv__get_response__unpack(NULL, resp_len, resp_buf);
+  assert(strcmp(response->values[0]->key, "test_key") == 0);
+  assert(strncmp((char *)response->values[0]->value->data.data, "Hello, World!",
+                 response->values[0]->value->data.len) == 0);
+  assert(response->values[0]->value->flags == 0);
+  kv__get_response__free_unpacked(response, NULL);
 }
 
 int main() {
@@ -96,10 +109,53 @@ int main() {
   uint32_t test_data_len = sizeof(test_data) - 1;
   char *keys[] = {(char *)test_key};
 
+  struct timespec start, end;
+  struct timespec total_start, total_end;
+  struct rusage usage_start, usage_end;
+  long long set_total_time_ns = 0;
+  long long get_total_time_ns = 0;
+
+  getrusage(RUSAGE_SELF, &usage_start);
+  clock_gettime(CLOCK_MONOTONIC, &total_start);
+
   for (int i = 0; i < REQ_CNT / 2; i++) {
+    clock_gettime(CLOCK_MONOTONIC, &start);
     send_set_request(sock_fd, test_key, 0, 0, test_data, test_data_len);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    set_total_time_ns +=
+        ((long long)(end.tv_sec - start.tv_sec) * 1000000000LL) +
+        (end.tv_nsec - start.tv_nsec);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
     send_get_request(sock_fd, keys, 1);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    get_total_time_ns +=
+        ((long long)(end.tv_sec - start.tv_sec) * 1000000000LL) +
+        (end.tv_nsec - start.tv_nsec);
   }
+
+  clock_gettime(CLOCK_MONOTONIC, &total_end);
+  getrusage(RUSAGE_SELF, &usage_end);
+
+  int total_elapsed_time = (int)(total_end.tv_sec - total_start.tv_sec);
+
+  long long cpu_time_used =
+      (usage_end.ru_utime.tv_sec - usage_start.ru_utime.tv_sec) * 1000000LL +
+      (usage_end.ru_utime.tv_usec - usage_start.ru_utime.tv_usec) +
+      (usage_end.ru_stime.tv_sec - usage_start.ru_stime.tv_sec) * 1000000LL +
+      (usage_end.ru_stime.tv_usec - usage_start.ru_stime.tv_usec);
+
+  double avg_cpu_per_second = (cpu_time_used / 1000000.0) / total_elapsed_time;
+
+  printf("Total request count: %d\n", REQ_CNT);
+  printf("Total elapsed time: %ds\n", total_elapsed_time);
+  printf("Average throuthput: %d\n", REQ_CNT / total_elapsed_time);
+  printf("Average latency(set): %.2f us\n",
+         (set_total_time_ns / 1000.0) / REQ_CNT);
+  printf("Average latency(get): %.2f us\n",
+         (get_total_time_ns / 1000.0) / REQ_CNT);
+  printf("Total CPU time used: %.2f s\n", cpu_time_used / 1000000.0);
+  printf("Average CPU usage per second: %.2f%%\n", avg_cpu_per_second * 100);
 
   close(sock_fd);
 

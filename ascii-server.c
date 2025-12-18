@@ -1,12 +1,15 @@
 #include "libstorage.h"
 #include <arpa/inet.h>
 #include <assert.h>
+#include <bits/time.h>
+#include <bits/types/struct_rusage.h>
 #include <netinet/in.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -108,7 +111,12 @@ int main() {
   assert(client_fd >= 0);
 
   struct timespec start, end;
+  struct timespec total_start, total_end;
+  struct rusage usage_start, usage_end;
   long long total_time_ns = 0;
+
+  getrusage(RUSAGE_SELF, &usage_start);
+  clock_gettime(CLOCK_MONOTONIC, &total_start);
 
   for (int i = 0; i < REQ_CNT; i++) {
     char buf[1024];
@@ -148,8 +156,26 @@ int main() {
     total_time_ns += elapsed_ns;
   }
 
-  double avg_time = (total_time_ns / 1000.0) / REQ_CNT;
-  printf("Average time per request: %.2f microseconds\n", avg_time);
+  clock_gettime(CLOCK_MONOTONIC, &total_end);
+  getrusage(RUSAGE_SELF, &usage_end);
+
+  int total_elapsed_time = (int)(total_end.tv_sec - total_start.tv_sec);
+
+  long long cpu_time_used =
+      (usage_end.ru_utime.tv_sec - usage_start.ru_utime.tv_sec) * 1000000LL +
+      (usage_end.ru_utime.tv_usec - usage_start.ru_utime.tv_usec) +
+      (usage_end.ru_stime.tv_sec - usage_start.ru_stime.tv_sec) * 1000000LL +
+      (usage_end.ru_stime.tv_usec - usage_start.ru_stime.tv_usec);
+
+  double avg_cpu_per_second = (cpu_time_used / 1000000.0) / total_elapsed_time;
+
+  printf("Total request count: %d\n", REQ_CNT);
+  printf("Total elapsed time: %ds\n", total_elapsed_time);
+  printf("Average throuthput: %d\n", REQ_CNT / total_elapsed_time);
+  printf("Average processing time: %.2f us\n",
+         (total_time_ns / 1000.0) / REQ_CNT);
+  printf("Total CPU time used: %.2f s\n", cpu_time_used / 1000000.0);
+  printf("Average CPU usage per second: %.2f%%\n", avg_cpu_per_second * 100);
 
   close(client_fd);
   close(server_fd);

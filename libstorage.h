@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <time.h>
 
-#define REQ_CNT 100000
+#define REQ_CNT 1000000
 
 typedef struct {
   uint8_t data[128];
