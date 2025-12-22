@@ -1715,8 +1715,8 @@ static void process_lop_insert_complete(conn *c)
         switch (ret) {
         case ENGINE_SUCCESS:
             STATS_HITS(c, lop_insert, c->coll_key, c->coll_nkey);
-            if (created) out_string(c, "CREATED_STORED");
-            else         out_string(c, "STORED");
+            if (created) out_string(c, "CREATED_STOREDAAAA");
+            else         out_string(c, "STOREDAAAA");
             break;
         case ENGINE_KEY_ENOENT:
             STATS_MISSES(c, lop_insert, c->coll_key, c->coll_nkey);
@@ -1762,8 +1762,8 @@ static void process_sop_insert_complete(conn *c)
         switch (ret) {
         case ENGINE_SUCCESS:
             STATS_HITS(c, sop_insert, c->coll_key, c->coll_nkey);
-            if (created) out_string(c, "CREATED_STORED");
-            else         out_string(c, "STORED");
+            if (created) out_string(c, "CREATED_STOREDAAAA");
+            else         out_string(c, "STOREDAAAA");
             break;
         case ENGINE_KEY_ENOENT:
             STATS_MISSES(c, sop_insert, c->coll_key, c->coll_nkey);
@@ -1922,8 +1922,8 @@ static void process_mop_insert_complete(conn *c)
             if (replaced) {
                 out_string(c, "REPLACED");
             } else {
-                if (created) out_string(c, "CREATED_STORED");
-                else         out_string(c, "STORED");
+                if (created) out_string(c, "CREATED_STOREDAAAA");
+                else         out_string(c, "STOREDAAAA");
             }
             break;
         case ENGINE_KEY_ENOENT:
@@ -2339,8 +2339,8 @@ static void process_bop_insert_complete(conn *c)
                 if (replaced) {
                     out_string(c, "REPLACED");
                 } else {
-                    if (created) out_string(c, "CREATED_STORED");
-                    else         out_string(c, "STORED");
+                    if (created) out_string(c, "CREATED_STOREDAAAA");
+                    else         out_string(c, "STOREDAAAA");
                 }
             }
             break;
@@ -3436,7 +3436,7 @@ static void complete_update_ascii(conn *c)
 
         switch (ret) {
         case ENGINE_SUCCESS:
-            out_string(c, "STORED");
+            out_string(c, "STOREDAAAA");
             break;
         case ENGINE_KEY_EEXISTS:
             out_string(c, "EXISTS");
@@ -3444,8 +3444,8 @@ static void complete_update_ascii(conn *c)
         case ENGINE_KEY_ENOENT:
             out_string(c, "NOT_FOUND");
             break;
-        case ENGINE_NOT_STORED:
-            out_string(c, "NOT_STORED");
+        case ENGINE_NOT_STOREDAAAA:
+            out_string(c, "NOT_STOREDAAAA");
             break;
         case ENGINE_PREFIX_ENAME:
             out_string(c, "CLIENT_ERROR invalid prefix name");
@@ -3665,7 +3665,7 @@ static void write_bin_packet(conn *c, protocol_binary_response_status err, int s
         len = snprintf(buffer, MAX_BUF_SIZE,
                        "Non-numeric server-side value for incr or decr");
         break;
-    case PROTOCOL_BINARY_RESPONSE_NOT_STORED:
+    case PROTOCOL_BINARY_RESPONSE_NOT_STOREDAAAA:
         len = snprintf(buffer, MAX_BUF_SIZE, "Not stored");
         break;
     case PROTOCOL_BINARY_RESPONSE_EBADTYPE:
@@ -3862,8 +3862,8 @@ static void complete_incr_bin(conn *c)
     case ENGINE_EINVAL:
         write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_DELTA_BADVAL, 0);
         break;
-    case ENGINE_NOT_STORED:
-        write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_STORED, 0);
+    case ENGINE_NOT_STOREDAAAA:
+        write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_STOREDAAAA, 0);
         break;
     case ENGINE_NOT_MY_VBUCKET:
         write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_MY_VBUCKET, 0);
@@ -3933,14 +3933,14 @@ static void complete_update_bin(conn *c)
         case ENGINE_KEY_ENOENT:
             write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);
             break;
-        case ENGINE_NOT_STORED:
+        case ENGINE_NOT_STOREDAAAA:
             /* FIXME: check below code, later. */
             if (c->store_op == OPERATION_ADD) {
                 write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_KEY_EEXISTS, 0);
             } else if (c->store_op == OPERATION_REPLACE) {
                 write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);
             } else {
-                write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_STORED, 0);
+                write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_STOREDAAAA, 0);
             }
             break;
         case ENGINE_PREFIX_ENAME:
@@ -9192,7 +9192,7 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
             out_string(c, "CLIENT_ERROR invalid prefix name");
         else if (ret == ENGINE_ENOMEM)
             out_string(c, "SERVER_ERROR out of memory");
-        else if (ret == ENGINE_NOT_STORED)
+        else if (ret == ENGINE_NOT_STOREDAAAA)
             out_string(c, "SERVER_ERROR failed to store item");
         else if (ret == ENGINE_EBADTYPE)
             out_string(c, "TYPE_MISMATCH");
