@@ -1549,6 +1549,9 @@ static enum dump_mode do_item_dump_mode_check(const char *modestr)
     if (memcmp(modestr, "key", 3) == 0) {
         mode = DUMP_MODE_KEY;
     }
+    else if (memcmp(modestr, "snapshot", 8) == 0) {
+        mode = DUMP_MODE_SNAPSHOT;
+    }
     return mode;
 }
 
@@ -1592,12 +1595,17 @@ ENGINE_ERROR_CODE item_dump_start(struct default_engine *engine,
 #ifdef ENABLE_PERSISTENCE
         if (mode == DUMP_MODE_SNAPSHOT) {
             dumper->running = true;
+            chkpt_thread_wakeup();
+            dumper->running = false;
+            break;
+            /*
             ret = chkpt_snapshot_start(CHKPT_SNAPSHOT_MODE_DATA, prefix, nprefix,
                                        filepath, item_dumper_done);
             if (ret != ENGINE_SUCCESS) {
                 dumper->running = false;
             }
             break;
+            */
         }
 #endif
 

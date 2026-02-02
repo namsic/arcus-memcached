@@ -156,11 +156,23 @@ static uint32_t do_log_buff_flush(bool flush_all)
     }
 
     if (nflush > 0) {
-        cmdlog_file_write(&logbuff->data[logbuff->head], nflush, dual_write_flag);
+        uint32_t written_bytes = 0;
+        int rolled = 0;
+        written_bytes = cmdlog_file_write(&logbuff->data[logbuff->head], nflush, dual_write_flag, &rolled);
 
         /* update nxt_flush_lsn */
         pthread_mutex_lock(&log_buff_gl.flush_lsn_lock);
-        log_buff_gl.nxt_flush_lsn.roffset += nflush;
+        logger->log(EXTENSION_LOG_INFO, NULL, "[DEBUG flush_lsn] filenum=%d roffset=%ld\n",
+                            log_buff_gl.nxt_flush_lsn.filenum, log_buff_gl.nxt_flush_lsn.roffset);
+        if (rolled > 0) { // cmdlog_file_write 기록 중 파일이 변경됨.
+            log_buff_gl.nxt_flush_lsn.filenum += rolled;
+            log_buff_gl.nxt_flush_lsn.roffset = written_bytes;
+        }
+        else {
+            log_buff_gl.nxt_flush_lsn.roffset += nflush;
+        }
+        logger->log(EXTENSION_LOG_INFO, NULL, "[DEBUG flush_lsn] filenum=%d roffset=%ld\n",
+                            log_buff_gl.nxt_flush_lsn.filenum, log_buff_gl.nxt_flush_lsn.roffset);
         pthread_mutex_unlock(&log_buff_gl.flush_lsn_lock);
 
         /* update next flush position */
@@ -204,6 +216,7 @@ static LogSN do_log_buff_write(LogRec *logrec, bool dual_write)
                  * to make to-be-flushed log data contiguous in memory.
                  */
                 if (logbuff->fque[logbuff->fend].nflush > 0) {
+                    logger->log(EXTENSION_LOG_INFO, NULL, "FLUSH!\n");
                     if ((++logbuff->fend) == logbuff->fqsz) logbuff->fend = 0;
                 }
                 if (total_length < logbuff->head) {
@@ -232,7 +245,13 @@ static LogSN do_log_buff_write(LogRec *logrec, bool dual_write)
     }
 
     /* update nxt_write_lsn */
+
+    //log_buff_gl.nxt_write_lsn.roffset = cmdlog_get_initial_size();
     current_lsn = log_buff_gl.nxt_write_lsn;
+    if (log_buff_gl.nxt_write_lsn.roffset+total_length > MAX_FILE_SIZE) {
+        log_buff_gl.nxt_write_lsn.filenum += 1;
+        log_buff_gl.nxt_write_lsn.roffset = 0;
+    }
     log_buff_gl.nxt_write_lsn.roffset += total_length;
 
     /* update log flush request */
@@ -244,8 +263,13 @@ static LogSN do_log_buff_write(LogRec *logrec, bool dual_write)
         /* check remain length */
         spare_length = CMDLOG_FLUSH_AUTO_SIZE - logbuff->fque[logbuff->fend].nflush;
         if (spare_length >= total_length) spare_length = total_length;
+        else {
+            /* Prevent record splitting */
+            if ((++logbuff->fend) == logbuff->fqsz) logbuff->fend = 0;
+        }
 
         logbuff->fque[logbuff->fend].nflush += spare_length;
+        logger->log(EXTENSION_LOG_INFO, NULL, "[DEBUG] nflush = %d\n", logbuff->fque[logbuff->fend].nflush);
         logbuff->fque[logbuff->fend].dual_write = dual_write;
         if (logbuff->fque[logbuff->fend].nflush == CMDLOG_FLUSH_AUTO_SIZE) {
             if ((++logbuff->fend) == logbuff->fqsz) logbuff->fend = 0;
@@ -261,6 +285,11 @@ static LogSN do_log_buff_write(LogRec *logrec, bool dual_write)
             do_log_flusher_wakeup(&log_buff_gl.log_flusher);
         }
     }
+
+    logger->log(EXTENSION_LOG_INFO, NULL, "[DEBUG write_lsn] filenum=%d roffset=%ld\n",
+                            current_lsn.filenum, current_lsn.roffset);
+    logger->log(EXTENSION_LOG_INFO, NULL, "[DEBUG write_lsn] filenum=%d roffset=%ld\n",
+                            log_buff_gl.nxt_write_lsn.filenum, log_buff_gl.nxt_write_lsn.roffset);
     return current_lsn;
 }
 
@@ -279,7 +308,7 @@ static void do_log_buff_complete_dual_write(bool success)
 
         /* update nxt_write_lsn */
         log_buff_gl.nxt_write_lsn.filenum += 1;
-        log_buff_gl.nxt_write_lsn.roffset = logbuff->dw_size;
+        log_buff_gl.nxt_write_lsn.roffset = cmdlog_get_dual_size();
     } else {
         /* clear dual write size */
         logbuff->dw_size = 0;
@@ -417,7 +446,7 @@ ENGINE_ERROR_CODE cmdlog_buf_init(struct default_engine* engine)
 
     /* log buff global init */
     log_buff_gl.nxt_flush_lsn.filenum = 1;
-    log_buff_gl.nxt_flush_lsn.roffset = 0;
+    log_buff_gl.nxt_flush_lsn.roffset = cmdlog_get_initial_size();
     log_buff_gl.upt_flush_lsn.filenum = 0;
     log_buff_gl.upt_flush_lsn.roffset = 0;
     log_buff_gl.nxt_write_lsn = log_buff_gl.nxt_flush_lsn;

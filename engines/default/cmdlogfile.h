@@ -21,13 +21,20 @@
 #include "cmdlogrec.h"
 
 #ifdef ENABLE_PERSISTENCE
+
+#define MAX_FILE_SIZE (4 * 1024) //1024*1024*1024 // 1GB /* unit : byte */
+uint32_t cmdlog_get_dual_size(void);
+uint32_t cmdlog_get_initial_size(void);
+void logfile_q_init(struct default_engine* engine);
+
 /* external log file functions */
-void cmdlog_file_write(char *log_ptr, uint32_t log_size, bool dual_write);
+uint32_t cmdlog_file_write(char *log_ptr, uint32_t log_size, bool dual_write,
+                            int *rolled);
 void cmdlog_file_complete_dual_write(void);
 bool cmdlog_file_dual_write_finished(void);
 int  cmdlog_file_sync(void);
 
-int    cmdlog_file_open(char *path);
+int    cmdlog_file_open(char *path, int mode);
 void   cmdlog_file_close(void);
 void   cmdlog_file_init(struct default_engine* engine);
 void   cmdlog_file_final(void);

@@ -9990,8 +9990,8 @@ static void process_zkensemble_command(conn *c, token_t *tokens, const size_t nt
 static void process_dump_command(conn *c, token_t *tokens, const size_t ntokens)
 {
     char *subcommand;
-    char *modestr;
-    char *filepath;
+    char *modestr = NULL;
+    char *filepath = NULL;
     char *prefix = NULL;
     int  nprefix = -1; /* all prefixes */
 
@@ -10008,15 +10008,17 @@ static void process_dump_command(conn *c, token_t *tokens, const size_t ntokens)
 
     /* dump ascii command
      * dump start <mode> [<prefix>] filepath\r\n
-     *   <mode> : key
+     *   <mode> : key, snapshot
      * dump stop\r\n
      */
     if (memcmp(subcommand, "start", 5) == 0) {
-        CHECK_NTOKENS(ntokens, 5, 6);
+        CHECK_NTOKENS(ntokens, 4, 6);
 
         modestr = tokens[2].value;
         if (ntokens == 5) {
             filepath = tokens[3].value;
+        } else if (ntokens == 4 && (strncmp(tokens[2].value, "snapshot", 8) == 0)) {
+            filepath = NULL;
         } else {
             prefix = tokens[3].value;
             nprefix = tokens[3].length;
@@ -10030,6 +10032,11 @@ static void process_dump_command(conn *c, token_t *tokens, const size_t ntokens)
                 nprefix = 0;
             }
             filepath = tokens[4].value;
+        }
+        if (nprefix == 6 && strncmp(prefix, "<null>", 6) == 0) {
+            /* dump null prefix */
+            prefix = NULL;
+            nprefix = 0;
         }
     }
     else if (memcmp(subcommand, "stop", 4) == 0) {

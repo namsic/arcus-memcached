@@ -21,6 +21,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <sys/time.h>
 
 #include "default_engine.h"
@@ -50,10 +51,140 @@ struct log_file_global {
     volatile bool   initialized;
 };
 
+typedef struct _logfile_node {
+    log_FILE file;
+    struct _logfile_node *next_file;
+} logfile_Node;
+
+/* log file queue global structure */
+struct logfile_queue {
+    logfile_Node *head;       /* cmdlog queue head */
+    logfile_Node *tail;       /* cmdlog queue tail*/
+    logfile_Node *dw_head;    /* dual-write head */
+    logfile_Node *dw_tail;    /* dual-write head */
+    logfile_Node *prev;        /* current write position*/
+
+    /* file_count, max_file_size*/
+    int file_node_count;
+    int max_file_size;
+};
+
 /* global data */
 static struct engine_config *config = NULL;
 static EXTENSION_LOGGER_DESCRIPTOR *logger = NULL;
 static struct log_file_global log_file_gl;
+static struct logfile_queue logfile_q;
+
+/*
+* Static Function for file circular queue
+*/
+
+uint32_t cmdlog_get_dual_size()
+{
+    return logfile_q.dw_tail->file.size;
+}
+
+/* 로그 기록을 시작할 파일의 크기 반환 */
+uint32_t cmdlog_get_initial_size()
+{
+    return logfile_q.tail->file.size;
+}
+
+static int create_new_cmdlog(log_FILE *logfile) {
+    int fd;
+    int64_t newtime = getnowdatetime_int();
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+
+    struct tm tm;
+    localtime_r(&ts.tv_sec, &tm);
+
+    snprintf(logfile->path, MAX_FILEPATH_LENGTH,"%s/%s%"PRId64"_%09ld",
+            config->logs_path, "cmdlog_", newtime, ts.tv_nsec);
+
+    if ((fd = open(logfile->path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP))<0) {
+        logger->log(EXTENSION_LOG_WARNING, "Fail to open file : %s\n", logfile->path);
+        return -1;
+    }
+
+    logfile->fd = fd;
+    logfile->next_fd = -1;
+    logfile->prev_fd = -1;
+    logfile->size = 0;
+    logfile->next_size = 0;
+    return 0;
+}
+
+static void create_file_node(logfile_Node **head, logfile_Node **tail, bool created) {
+    logfile_Node *new_file = (logfile_Node*)malloc(sizeof(logfile_Node));
+    new_file->file.fd = -1;
+    if (created && (create_new_cmdlog(&new_file->file) < 0)) {
+        return;
+    }
+    new_file->file.next_fd = -1;
+    new_file->file.prev_fd = -1;
+    new_file->file.size = 0;
+    new_file->file.next_size = 0;
+    new_file->next_file = NULL;
+
+    if (*head == NULL) {
+        *head = *tail = new_file;
+    }
+    else {
+        (*tail)->next_file = new_file;
+        *tail = new_file;
+    }
+}
+
+static int cmdlogfilter(const struct dirent *ent)
+{
+    return (strncmp(ent->d_name, "cmdlog_", strlen("cmdlog_")) == 0);
+}
+
+void logfile_q_init(struct default_engine* engine)
+{
+    config = &engine->config;
+    logfile_q.max_file_size = MAX_FILE_SIZE;
+
+    /* find last created file */
+    struct dirent **cmdlog_list;
+    int cmdlog_count = scandir(config->logs_path, &cmdlog_list, cmdlogfilter, alphasort);
+
+    if (cmdlog_count == 0) {
+        create_file_node(&logfile_q.head, &logfile_q.tail, true);
+        close(logfile_q.head->file.fd);
+        logfile_q.head->file.fd = -1;
+        return;
+    }
+
+    struct dirent *ent;
+    int lastidx = 0;
+
+    while (lastidx < cmdlog_count) {
+        ent = cmdlog_list[lastidx];
+        create_file_node(&logfile_q.head, &logfile_q.tail, false);
+        sprintf(logfile_q.tail->file.path, "%s/%s", config->logs_path, ent->d_name);
+
+        struct stat sb;
+        if (stat(logfile_q.tail->file.path, &sb) < 0) {
+            logger->log(EXTENSION_LOG_WARNING, NULL, "stat() error. path: %s\n", logfile_q.head->file.path);
+            return;
+        }
+
+        /* set cmdlog file info */
+        logfile_q.tail->file.size = sb.st_size;
+        logfile_q.tail->file.next_size = 0;
+        logfile_q.tail->file.fd = -1;
+        logfile_q.tail->file.next_fd = -1;
+        logfile_q.tail->file.prev_fd = -1;
+        lastidx++;
+    }
+
+    for (int i = 0; i < cmdlog_count; i++) {
+        free(cmdlog_list[i]);
+    }
+    free(cmdlog_list);
+}
 
 /*
  * Static Functions for DIsk IO
@@ -138,13 +269,66 @@ static int disk_close(int fd)
 }
 /***************/
 
-void cmdlog_file_write(char *log_ptr, uint32_t log_size, bool dual_write)
+static size_t cmdlog_file_fit(log_FILE *logfile, char **log_ptr, uint32_t log_size)
 {
-    log_FILE *logfile = &log_file_gl.log_file;
+    size_t bytes_to_write = 0;
     ssize_t nwrite;
+    while (bytes_to_write < log_size) {
+        LogRec *logrec = (LogRec*)(*log_ptr + bytes_to_write);
+        LogHdr *loghdr = &logrec->header;
+        size_t log_len = sizeof(LogHdr)+loghdr->body_length;
+        printf("cmdlog_file_fit=%ld\n", log_len);
+
+        if (logfile->size+bytes_to_write+log_len > MAX_FILE_SIZE)
+            break;
+
+        bytes_to_write += log_len;
+    }
+
+    if (bytes_to_write > 0) {
+        nwrite = disk_write(logfile->fd, *log_ptr, bytes_to_write);
+        if (nwrite != bytes_to_write) {
+            logger->log(EXTENSION_LOG_WARNING, NULL,
+                "curr log file(%d) write - write(%ld!=%ld) error=(%d:%s)\n",
+                logfile->fd, nwrite, (ssize_t)bytes_to_write,
+                errno, strerror(errno));
+        }
+
+        *log_ptr += bytes_to_write;
+        log_size -= bytes_to_write;
+        logfile->size += bytes_to_write;
+    }
+
+    return log_size;
+}
+
+uint32_t cmdlog_file_write(char *log_ptr, uint32_t log_size, bool dual_write,
+                            int *rolled)
+{
+    logfile_Node *curr_file = logfile_q.tail;
+    log_FILE *logfile = &curr_file->file;
+    ssize_t nwrite;
+    uint32_t dual_log_size = log_size;
+    char *dual_log_ptr = log_ptr;
     assert(logfile->fd != -1);
 
     pthread_mutex_lock(&log_file_gl.file_access_lock);
+
+    /* async의 경우 한 번에 여러 개의 로그 레코드로 구성 가능 */
+    while (logfile->size+log_size > MAX_FILE_SIZE) {
+        log_size = cmdlog_file_fit(logfile, &log_ptr, log_size);
+
+        pthread_mutex_unlock(&log_file_gl.file_access_lock);
+        disk_fsync(logfile->fd);
+        disk_close(logfile->fd);
+        pthread_mutex_lock(&log_file_gl.file_access_lock);
+        logfile->fd = -1;
+        create_file_node(&logfile_q.head, &logfile_q.tail, true);
+        curr_file = curr_file->next_file;
+        logfile = &curr_file->file;
+        *rolled += 1;
+    }
+
     /* The log data is appended */
     nwrite = disk_write(logfile->fd, log_ptr, log_size);
     if (nwrite != log_size) {
@@ -157,37 +341,77 @@ void cmdlog_file_write(char *log_ptr, uint32_t log_size, bool dual_write)
     assert(nwrite == log_size);
     logfile->size += log_size;
 
-    if (dual_write && logfile->next_fd != -1) {
+    /* need to change */
+    if (dual_write && logfile_q.dw_tail != NULL) {
+        curr_file = logfile_q.dw_tail;
+        logfile = &curr_file->file;
+
+        while (logfile->size+dual_log_size > MAX_FILE_SIZE) {
+            dual_log_size = cmdlog_file_fit(logfile, &dual_log_ptr, dual_log_size);
+            pthread_mutex_unlock(&log_file_gl.file_access_lock);
+            disk_fsync(logfile->fd);
+            disk_close(logfile->fd);
+            pthread_mutex_lock(&log_file_gl.file_access_lock);
+            logfile->fd = -1;
+            create_file_node(&logfile_q.dw_head, &logfile_q.dw_tail, true);
+
+            curr_file = logfile_q.dw_tail;
+            logfile = &curr_file->file;
+            *rolled += 1;
+        }
+
         /* The log data is appended */
-        nwrite = disk_write(logfile->next_fd, log_ptr, log_size);
-        if (nwrite != log_size) {
+        nwrite = disk_write(logfile->fd, dual_log_ptr, dual_log_size);
+        if (nwrite != dual_log_size) {
             logger->log(EXTENSION_LOG_WARNING, NULL,
                         "next log file(%d) write - write(%ld!=%ld) error=(%d:%s)\n",
-                        logfile->next_fd, nwrite, (ssize_t)log_size,
+                        logfile->fd, nwrite, (ssize_t)dual_log_size,
                         errno, strerror(errno));
         }
         /* FIXME::need error handling */
-        assert(nwrite == log_size);
-        logfile->next_size += log_size;
+        assert(nwrite == dual_log_size);
+        logfile->size += dual_log_size;
     }
     pthread_mutex_unlock(&log_file_gl.file_access_lock);
+
+    return log_size;
+}
+
+static void clear_oldfile(logfile_Node **head, logfile_Node **tail)
+{
+    logfile_Node *curr = *head, *next;
+
+    while (curr != *tail) {
+        next = curr->next_file;
+
+        printf("del: %s\n", curr->file.path);
+
+        if (unlink(curr->file.path) < 0 && errno != ENOENT) {
+            logger->log(EXTENSION_LOG_WARNING, NULL,
+                        "Failed to remove cmdlog file. path: %s, error: %s\n",
+                        curr->file.path, strerror(errno));
+        }
+        free(curr);
+        curr = next;
+    }
+    *head = *tail;
 }
 
 void cmdlog_file_complete_dual_write(void)
 {
-    log_FILE *logfile = &log_file_gl.log_file;
+    struct logfile_queue *fq = &logfile_q;
 
     pthread_mutex_lock(&log_file_gl.file_access_lock);
-    if (logfile->next_fd != -1) {
-        logfile->prev_fd   = logfile->fd;
-        logfile->fd        = logfile->next_fd;
-        logfile->size      = logfile->next_size;
-        logfile->next_fd   = -1;
-        logfile->next_size = 0;
+    if (fq->dw_head != NULL) {
+        fq->tail->next_file = fq->dw_head;
+        fq->prev = fq->tail;
+        fq->tail = fq->dw_tail;
 
         if (config->async_logging) {
-            (void)disk_close(logfile->prev_fd);
-            logfile->prev_fd = -1;
+            (void)disk_close(fq->prev->file.fd);
+            clear_oldfile(&fq->head, &fq->dw_head);
+            fq->prev = NULL;
+            fq->dw_head = fq->dw_tail = NULL;
         }
     }
     pthread_mutex_unlock(&log_file_gl.file_access_lock);
@@ -195,10 +419,10 @@ void cmdlog_file_complete_dual_write(void)
 
 bool cmdlog_file_dual_write_finished(void)
 {
-    log_FILE *logfile = &log_file_gl.log_file;
+    struct logfile_queue *fq = &logfile_q;
     bool finished = false;
     pthread_mutex_lock(&log_file_gl.file_access_lock);
-    if (logfile->next_fd == -1 && logfile->prev_fd == -1) {
+    if (fq->dw_head == NULL && fq->dw_tail == NULL) {
         finished = true;
     }
     pthread_mutex_unlock(&log_file_gl.file_access_lock);
@@ -207,7 +431,10 @@ bool cmdlog_file_dual_write_finished(void)
 
 int cmdlog_file_sync(void)
 {
-    log_FILE *logfile = &log_file_gl.log_file;
+    logfile_Node *curr_file = logfile_q.tail;
+    logfile_Node *prev_file = logfile_q.prev;
+    logfile_Node *next_file = logfile_q.dw_tail;
+    log_FILE *logfile = &curr_file->file;
     LogSN now_flush_lsn;
     int fd;
     int prev_fd = -1;
@@ -221,24 +448,27 @@ int cmdlog_file_sync(void)
 
     /* get current fd info */
     pthread_mutex_lock(&log_file_gl.file_access_lock);
-    if (logfile->prev_fd != -1) {
-        prev_fd = logfile->prev_fd;
-        logfile->prev_fd = -1;
+
+    if (prev_file != NULL) {
+        prev_fd = prev_file->file.fd;
+        prev_file->file.fd = -1;
     }
     fd = logfile->fd;
-    if (logfile->next_fd != -1) {
-        next_fd = logfile->next_fd;
+    if (next_file != NULL) {
+        next_fd = next_file->file.fd;
     }
     pthread_mutex_unlock(&log_file_gl.file_access_lock);
 
     if (prev_fd != -1) {
         (void)disk_fsync(prev_fd);
         (void)disk_close(prev_fd);
+        clear_oldfile(&logfile_q.head, &logfile_q.dw_head);
+        logfile_q.prev = NULL;
+        logfile_q.dw_head = logfile_q.dw_tail = NULL;
     }
 
     if (LOGSN_IS_GT(&now_flush_lsn, &log_file_gl.nxt_fsync_lsn)) {
         do {
-            /* fsync curr fd */
             ret = disk_fsync(fd);
             if (ret < 0) {
                 logger->log(EXTENSION_LOG_WARNING, NULL,
@@ -268,26 +498,32 @@ int cmdlog_file_sync(void)
     return ret;
 }
 
-int cmdlog_file_open(char *path)
+/* mode : redo(0), snapshot(1)*/
+int cmdlog_file_open(char *path, int mode)
 {
-    log_FILE *logfile = &log_file_gl.log_file;
+    logfile_Node *curr_file;
+    if (mode) {
+        curr_file = logfile_q.tail;
+    } else {
+        curr_file = logfile_q.head;
+    }
+    log_FILE *logfile = &curr_file->file;
     int fd, ret = 0;
-
     pthread_mutex_lock(&log_file_gl.file_access_lock);
     do {
-        fd = disk_open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP);
+        fd = disk_open(logfile->path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP);
+
         if (fd < 0) {
             logger->log(EXTENSION_LOG_WARNING, NULL,
                         "Failed to open the cmdlog file. path=%s err=%s\n",
                         logfile->path, strerror(errno));
             ret = -1; break;
         }
-        snprintf(logfile->path, MAX_FILEPATH_LENGTH, "%s", path);
         if (logfile->fd == -1) {
             logfile->fd = fd;
         } else {
             /* fd != -1 means that a new cmdlog file is created by checkpoint */
-            logfile->next_fd = fd;
+            create_file_node(&logfile_q.dw_head, &logfile_q.dw_tail, true);
         }
     } while(0);
     pthread_mutex_unlock(&log_file_gl.file_access_lock);
@@ -422,7 +658,9 @@ static int do_redo_pending_lrec(int fd, int start_offset, int end_offset)
 
 int cmdlog_file_apply(void)
 {
-    log_FILE *logfile = &log_file_gl.log_file;
+    logfile_Node *curr_file = logfile_q.head;
+    log_FILE *logfile = &curr_file->file;
+    log_FILE *next_logfile = &curr_file->next_file->file;
     assert(logfile->fd > 0);
 
     logger->log(EXTENSION_LOG_INFO, NULL,
@@ -446,7 +684,24 @@ int cmdlog_file_apply(void)
     LogRec *logrec = (LogRec*)buf;
     LogHdr *loghdr = &logrec->header;
 
-    while (log_file_gl.initialized && seek_offset < logfile->size) {
+    while (log_file_gl.initialized && (curr_file->next_file != NULL || seek_offset < logfile->size)) {
+
+        if (seek_offset >= logfile->size && next_logfile->size != 0) {
+            close(logfile->fd);
+            logfile = &curr_file->next_file->file;
+            curr_file = curr_file->next_file;
+            seek_offset = 0;
+            logfile->fd = open(logfile->path, O_RDWR);
+            logger->log(EXTENSION_LOG_INFO, NULL,
+                "[RECOVERY - CMDLOG] change command log file. path=%s\n", logfile->path);
+            fstat(logfile->fd, &file_stat);
+            logfile->size = file_stat.st_size;
+            if (logfile->size == 0) {
+                logger->log(EXTENSION_LOG_INFO, NULL,
+                            "[RECOVERY - CMDLOG] log file is empty.\n");
+                return 0;
+            }
+        }
 
         /* read header */
         if (logfile->size - seek_offset < sizeof(LogHdr)) {

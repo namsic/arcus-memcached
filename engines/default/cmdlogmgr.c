@@ -454,6 +454,8 @@ ENGINE_ERROR_CODE cmdlog_mgr_init(struct default_engine* engine_ptr)
     if (ret != ENGINE_SUCCESS) {
         return ret;
     }
+
+    (void)logfile_q_init(engine);
     (void)cmdlog_file_init(engine);
     ret = cmdlog_buf_init(engine);
     if (ret != ENGINE_SUCCESS) {
